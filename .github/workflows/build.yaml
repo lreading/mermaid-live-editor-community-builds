@@ -1,0 +1,185 @@
+name: Build and publish Mermaid Live Editor community builds
+
+on:
+  schedule:
+    - cron: "0 */6 * * *"
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+  packages: write
+
+concurrency:
+  group: build-and-release
+  cancel-in-progress: false
+
+env:
+  IMAGE_NAME: ghcr.io/${{ github.repository_owner }}/${{ github.event.repository.name }}
+  VERSION_SOURCE_REPO: mermaid-js/mermaid
+  BUILD_SOURCE_REPO: mermaid-js/mermaid-live-editor
+  MIN_UPSTREAM_VERSION: v11.12.2
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout this repo
+        uses: actions/checkout@v6
+
+      - name: Install jq
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y jq
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Clone build source repo
+        run: |
+          set -euo pipefail
+          git clone --filter=blob:none --no-checkout "https://github.com/${BUILD_SOURCE_REPO}.git" upstream
+          git -C upstream fetch --tags --force --prune
+
+      - name: Catch up builds and releases
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          ver_ge() {
+            local a="${1#v}"
+            local b="${2#v}"
+            [ "$(printf "%s\n%s\n" "$b" "$a" | sort -V | head -n1)" = "$b" ]
+          }
+
+          releases="$(curl -fsSL \
+            -H "Accept: application/vnd.github+json" \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            "https://api.github.com/repos/${VERSION_SOURCE_REPO}/releases?per_page=100")"
+
+          tags="$(echo "$releases" | jq -r '.[] | select(.draft == false and .prerelease == false) | .tag_name')"
+
+          if [ -z "$tags" ]; then
+            echo "No stable releases found from ${VERSION_SOURCE_REPO}" >&2
+            exit 1
+          fi
+
+          labels=(
+            "org.opencontainers.image.title=mermaid-live-editor-community-builds"
+            "org.opencontainers.image.source=https://github.com/${GITHUB_REPOSITORY}"
+            "org.opencontainers.image.description=Community builds of Mermaid Live Editor with cloud-facing UI integrations disabled/enabled via upstream build args"
+            "org.opencontainers.image.licenses=MIT"
+            "org.opencontainers.image.url=https://github.com/${GITHUB_REPOSITORY}"
+          )
+
+          label_args=()
+          for l in "${labels[@]}"; do
+            label_args+=(--label "$l")
+          done
+
+          min="${MIN_UPSTREAM_VERSION}"
+          sorted_tags="$(printf "%s\n" "$tags" | sort -V)"
+
+          built_any=false
+
+          for tag in $sorted_tags; do
+            if ! ver_ge "$tag" "$min"; then
+              continue
+            fi
+
+            if ! git -C upstream rev-parse -q --verify "refs/tags/${tag}" >/dev/null; then
+              continue
+            fi
+
+            ref="${IMAGE_NAME}:${tag}-nocloud"
+            if docker manifest inspect "$ref" >/dev/null 2>&1; then
+              continue
+            fi
+
+            echo "Building ${tag}..."
+
+            git -C upstream checkout -f "$tag"
+
+            version_label=(--label "org.opencontainers.image.version=${tag}")
+
+            docker buildx build \
+              --platform linux/amd64,linux/arm64 \
+              --push \
+              -t "${IMAGE_NAME}:${tag}-nocloud" \
+              "${label_args[@]}" \
+              "${version_label[@]}" \
+              --build-arg MERMAID_ANALYTICS_URL= \
+              --build-arg MERMAID_DOMAIN= \
+              --build-arg MERMAID_IS_ENABLED_MERMAID_CHART_LINKS= \
+              --build-arg MERMAID_RENDERER_URL= \
+              --build-arg MERMAID_KROKI_RENDERER_URL= \
+              --cache-from type=gha \
+              --cache-to type=gha,mode=max \
+              ./upstream
+
+            docker buildx build \
+              --platform linux/amd64,linux/arm64 \
+              --push \
+              -t "${IMAGE_NAME}:${tag}-kroki-default" \
+              "${label_args[@]}" \
+              "${version_label[@]}" \
+              --build-arg MERMAID_ANALYTICS_URL= \
+              --build-arg MERMAID_DOMAIN= \
+              --build-arg MERMAID_IS_ENABLED_MERMAID_CHART_LINKS= \
+              --build-arg MERMAID_RENDERER_URL= \
+              --cache-from type=gha \
+              --cache-to type=gha,mode=max \
+              ./upstream
+
+            docker buildx build \
+              --platform linux/amd64,linux/arm64 \
+              --push \
+              -t "${IMAGE_NAME}:${tag}-renderer-default" \
+              "${label_args[@]}" \
+              "${version_label[@]}" \
+              --build-arg MERMAID_ANALYTICS_URL= \
+              --build-arg MERMAID_DOMAIN= \
+              --build-arg MERMAID_IS_ENABLED_MERMAID_CHART_LINKS= \
+              --build-arg MERMAID_KROKI_RENDERER_URL= \
+              --cache-from type=gha \
+              --cache-to type=gha,mode=max \
+              ./upstream
+
+            docker buildx build \
+              --platform linux/amd64,linux/arm64 \
+              --push \
+              -t "${IMAGE_NAME}:${tag}-kroki-renderer-default" \
+              "${label_args[@]}" \
+              "${version_label[@]}" \
+              --build-arg MERMAID_ANALYTICS_URL= \
+              --build-arg MERMAID_DOMAIN= \
+              --build-arg MERMAID_IS_ENABLED_MERMAID_CHART_LINKS= \
+              --cache-from type=gha \
+              --cache-to type=gha,mode=max \
+              ./upstream
+
+            if ! gh release view "$tag" >/dev/null 2>&1; then
+              notes="$(printf "Upstream version: **%s**\n\nVariants:\n- \`%s:%s-nocloud\` - No renderer UI action and no Kroki UI action.\n- \`%s:%s-kroki-default\` - Default public Kroki UI action enabled, external renderer UI action disabled.\n- \`%s:%s-renderer-default\` - Default public renderer UI action enabled, Kroki UI action disabled.\n- \`%s:%s-kroki-renderer-default\` - Both default public Kroki and default public renderer UI actions enabled.\n" \
+                "$tag" "$IMAGE_NAME" "$tag" "$IMAGE_NAME" "$tag" "$IMAGE_NAME" "$tag" "$IMAGE_NAME" "$tag")"
+              gh release create "$tag" --title "$tag" --notes "$notes" --latest
+            fi
+
+            built_any=true
+          done
+
+          if [ "$built_any" = "false" ]; then
+            echo "Nothing to do."
+          fi
+

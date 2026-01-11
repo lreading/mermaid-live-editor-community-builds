@@ -42,11 +42,12 @@ Each variant includes an upstream version prefix and a suffix that describes the
 | `-renderer-default` | Enables the public external renderer in the UI; no Kroki UI action. | (default render behavior)<br>`MERMAID_KROKI_RENDERER_URL=""` |
 | `-kroki-renderer-default` | Enables both the public Kroki integration and the public external renderer UI actions. | (default behavior for both) |
 
+
 Examples:
-- `ghcr.io/lreading/mermaid-live-editor:v11.12.2-nocloud`
-- `ghcr.io/lreading/mermaid-live-editor:v11.12.2-kroki-default`
-- `ghcr.io/lreading/mermaid-live-editor:v11.12.2-renderer-default`
-- `ghcr.io/lreading/mermaid-live-editor:v11.12.2-kroki-renderer-default`
+- `ghcr.io/lreading/mermaid-live-editor-community-builds:v11.12.2-nocloud`
+- `ghcr.io/lreading/mermaid-live-editor-community-builds:v11.12.2-kroki-default`
+- `ghcr.io/lreading/mermaid-live-editor-community-builds:v11.12.2-renderer-default`
+- `ghcr.io/lreading/mermaid-live-editor-community-builds:v11.12.2-kroki-renderer-default`
 
 ---
 
