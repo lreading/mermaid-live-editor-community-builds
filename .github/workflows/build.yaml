@@ -12,20 +12,52 @@ permissions:
 env:
   IMAGE_NAME: ghcr.io/lreading/mermaid-live-editor-community-builds
   UPSTREAM_REPO: mermaid-js/mermaid-live-editor
+  UPSTREAM_BRANCH: master
 
 jobs:
-  build:
+  prep:
+    name: Resolve upstream SHA
     runs-on: ubuntu-24.04
+    outputs:
+      sha: ${{ steps.meta.outputs.sha }}
+      short_sha: ${{ steps.meta.outputs.short_sha }}
+      ts: ${{ steps.meta.outputs.ts }}
+    steps:
+      - id: meta
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          SHA="$(git ls-remote "https://github.com/${UPSTREAM_REPO}.git" "refs/heads/${UPSTREAM_BRANCH}" | awk '{print $1}')"
+          if [ -z "$SHA" ]; then
+            echo "Unable to resolve upstream SHA for ${UPSTREAM_REPO}@${UPSTREAM_BRANCH}" >&2
+            exit 1
+          fi
+
+          echo "sha=${SHA}" >> "$GITHUB_OUTPUT"
+          echo "short_sha=${SHA:0:12}" >> "$GITHUB_OUTPUT"
+          echo "ts=$(date -u +%Y%m%d%H%M%S)" >> "$GITHUB_OUTPUT"
+
+  build:
+    name: Build ${{ matrix.variant }} on ${{ matrix.arch }}
+    needs: prep
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [amd64, arm64]
+        variant: [nocloud, kroki-default, renderer-default, kroki-renderer-default]
+        include:
+          - arch: amd64
+            runner: ubuntu-24.04
+            platform: linux/amd64
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+            platform: linux/arm64
+    runs-on: ${{ matrix.runner }}
 
     steps:
       - name: Checkout this repo
         uses: actions/checkout@v6
-
-      - name: Install jq
-        run: |
-          set -euo pipefail
-          sudo apt-get update
-          sudo apt-get install -y jq
 
       - name: Login to GHCR
         uses: docker/login-action@v3
@@ -34,91 +66,114 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v3
-
       - name: Set up Buildx
         uses: docker/setup-buildx-action@v3
 
-      - name: Clone upstream
-        id: upstream
+      - name: Clone upstream at resolved SHA
+        shell: bash
         run: |
           set -euo pipefail
 
           git clone --filter=blob:none --no-checkout "https://github.com/${UPSTREAM_REPO}.git" upstream
-
-          # "develop" is the default branch, but Mermaid Live Editor's
-          # README calls out that releases are cut from the "master" branch
-          git -C upstream fetch --depth=1 origin master
+          git -C upstream fetch --depth=1 origin "${{ needs.prep.outputs.sha }}"
           git -C upstream checkout -f FETCH_HEAD
+          git -C upstream rev-parse HEAD
 
-          SHA="$(git -C upstream rev-parse HEAD)"
-          SHORT_SHA="${SHA:0:12}"
-          TS="$(date -u +%Y%m%d%H%M%S)"
-
-          echo "branch=master" >> "$GITHUB_OUTPUT"
-          echo "sha=${SHA}" >> "$GITHUB_OUTPUT"
-          echo "short_sha=${SHORT_SHA}" >> "$GITHUB_OUTPUT"
-          echo "ts=${TS}" >> "$GITHUB_OUTPUT"
-
-      - name: Build & push
+      - name: Build & push (single-arch)
+        shell: bash
         run: |
           set -euo pipefail
 
-          BRANCH="${{ steps.upstream.outputs.branch }}"
-          SHA="${{ steps.upstream.outputs.sha }}"
-          SHORT_SHA="${{ steps.upstream.outputs.short_sha }}"
-          TS="${{ steps.upstream.outputs.ts }}"
+          SHA="${{ needs.prep.outputs.sha }}"
+          SHORT_SHA="${{ needs.prep.outputs.short_sha }}"
+          TS="${{ needs.prep.outputs.ts }}"
+
+          VARIANT="${{ matrix.variant }}"
+          PLATFORM="${{ matrix.platform }}"
+          ARCH="${{ matrix.arch }}"
 
           LABELS=(
             --label "org.opencontainers.image.title=mermaid-live-editor-community-builds"
             --label "org.opencontainers.image.source=https://github.com/${GITHUB_REPOSITORY}"
             --label "org.opencontainers.image.revision=${GITHUB_SHA}"
-            --label "org.opencontainers.image.description=Community builds of Mermaid Live Editor (built from ${UPSTREAM_REPO}@${SHORT_SHA} on ${BRANCH})"
+            --label "org.opencontainers.image.description=Community builds of Mermaid Live Editor (built from ${UPSTREAM_REPO}@${SHORT_SHA} on ${UPSTREAM_BRANCH})"
             --label "io.lreading.upstream.repo=${UPSTREAM_REPO}"
-            --label "io.lreading.upstream.branch=${BRANCH}"
+            --label "io.lreading.upstream.branch=${UPSTREAM_BRANCH}"
             --label "io.lreading.upstream.sha=${SHA}"
           )
 
-          base_tags() {
-            local variant="$1"
-            echo "-t ${IMAGE_NAME}:latest-${variant} -t ${IMAGE_NAME}:${BRANCH}-${variant} -t ${IMAGE_NAME}:${TS}-${variant} -t ${IMAGE_NAME}:sha-${SHORT_SHA}-${variant}"
-          }
+          REF_ARCH="${IMAGE_NAME}:${VARIANT}-${TS}-${SHORT_SHA}-${ARCH}"
 
-          build_variant() {
-            local variant="$1"
-            shift
-
-            docker buildx build \
-              --platform linux/amd64,linux/arm64 \
-              --push \
-              $(base_tags "$variant") \
-              "${LABELS[@]}" \
-              "$@" \
-              ./upstream
-          }
-
-          build_variant "nocloud" \
-            --build-arg MERMAID_ANALYTICS_URL= \
-            --build-arg MERMAID_DOMAIN= \
-            --build-arg MERMAID_IS_ENABLED_MERMAID_CHART_LINKS= \
-            --build-arg MERMAID_RENDERER_URL= \
-            --build-arg MERMAID_KROKI_RENDERER_URL=
-
-          build_variant "kroki-default" \
-            --build-arg MERMAID_ANALYTICS_URL= \
-            --build-arg MERMAID_DOMAIN= \
-            --build-arg MERMAID_IS_ENABLED_MERMAID_CHART_LINKS= \
-            --build-arg MERMAID_RENDERER_URL=
-
-          build_variant "renderer-default" \
-            --build-arg MERMAID_ANALYTICS_URL= \
-            --build-arg MERMAID_DOMAIN= \
-            --build-arg MERMAID_IS_ENABLED_MERMAID_CHART_LINKS= \
-            --build-arg MERMAID_KROKI_RENDERER_URL=
-
-          build_variant "kroki-renderer-default" \
-            --build-arg MERMAID_ANALYTICS_URL= \
-            --build-arg MERMAID_DOMAIN= \
+          BUILD_ARGS=(
+            --build-arg MERMAID_ANALYTICS_URL=
+            --build-arg MERMAID_DOMAIN=
             --build-arg MERMAID_IS_ENABLED_MERMAID_CHART_LINKS=
+          )
+
+          case "${VARIANT}" in
+            nocloud)
+              BUILD_ARGS+=(--build-arg MERMAID_RENDERER_URL= --build-arg MERMAID_KROKI_RENDERER_URL=)
+              ;;
+            kroki-default)
+              BUILD_ARGS+=(--build-arg MERMAID_RENDERER_URL=)
+              ;;
+            renderer-default)
+              BUILD_ARGS+=(--build-arg MERMAID_KROKI_RENDERER_URL=)
+              ;;
+            kroki-renderer-default)
+              # Keep both renderer URLs at defaults, but still disable analytics/domain/chart-links.
+              ;;
+            *)
+              echo "Unknown variant: ${VARIANT}" >&2
+              exit 1
+              ;;
+          esac
+
+          docker buildx build \
+            --platform "${PLATFORM}" \
+            --push \
+            -t "${REF_ARCH}" \
+            "${LABELS[@]}" \
+            "${BUILD_ARGS[@]}" \
+            --cache-from type=gha,scope="${VARIANT}-${ARCH}" \
+            --cache-to type=gha,mode=max,scope="${VARIANT}-${ARCH}" \
+            ./upstream
+
+  manifest:
+    name: Publish multi-arch tags
+    needs: [prep, build]
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Login to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Create multi-arch manifests
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          SHORT_SHA="${{ needs.prep.outputs.short_sha }}"
+          TS="${{ needs.prep.outputs.ts }}"
+
+          variants=(nocloud kroki-default renderer-default kroki-renderer-default)
+
+          for v in "${variants[@]}"; do
+            amd="${IMAGE_NAME}:${v}-${TS}-${SHORT_SHA}-amd64"
+            arm="${IMAGE_NAME}:${v}-${TS}-${SHORT_SHA}-arm64"
+
+            # Create a manifest list (multi-arch) from the already-pushed per-arch images.
+            docker buildx imagetools create \
+              -t "${IMAGE_NAME}:${v}" \
+              -t "${IMAGE_NAME}:${v}-${SHORT_SHA}" \
+              -t "${IMAGE_NAME}:${v}-${TS}" \
+              "${amd}" \
+              "${arm}"
+          done
 
