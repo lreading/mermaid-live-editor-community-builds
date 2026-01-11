@@ -17,7 +17,7 @@ env:
   IMAGE_NAME: ghcr.io/${{ github.repository_owner }}/${{ github.event.repository.name }}
   VERSION_SOURCE_REPO: mermaid-js/mermaid
   BUILD_SOURCE_REPO: mermaid-js/mermaid-live-editor
-  MIN_UPSTREAM_VERSION: v11.12.2
+  MIN_UPSTREAM_VERSION: v11.12.1
 
 jobs:
   build:
