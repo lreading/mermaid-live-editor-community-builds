@@ -33,7 +33,7 @@ Review those for additional context on the build arguments used here.
 
 ## Available image tags
 
-Each variant includes an upstream version prefix and a suffix that describes the build configuration.
+Each variant includes the above default buid-args, as well as the specific build-args configuration for that variant.
 
 | Tag suffix | Description | Build-time config |
 |------------|-------------|------------------|
@@ -44,18 +44,18 @@ Each variant includes an upstream version prefix and a suffix that describes the
 
 
 Examples:
-- `ghcr.io/lreading/mermaid-live-editor-community-builds:v11.12.2-nocloud`
-- `ghcr.io/lreading/mermaid-live-editor-community-builds:v11.12.2-kroki-default`
-- `ghcr.io/lreading/mermaid-live-editor-community-builds:v11.12.2-renderer-default`
-- `ghcr.io/lreading/mermaid-live-editor-community-builds:v11.12.2-kroki-renderer-default`
+- `ghcr.io/lreading/mermaid-live-editor-community-builds:nocloud`
+- `ghcr.io/lreading/mermaid-live-editor-community-builds:kroki-default`
+- `ghcr.io/lreading/mermaid-live-editor-community-builds:renderer-default`
+- `ghcr.io/lreading/mermaid-live-editor-community-builds:kroki-renderer-default`
 
 ---
 
 ## Release policy
 
-This repository publishes automated releases and container images whenever a new stable upstream version of the Mermaid Live Editor is detected.
+This repository publishes automated releases and container images based off of the `master` branch of the official mermaid-live-editor repository, which is how Mermaid-Js builds/releases the official docker image.
 
-The images start with upstream version **v11.12.2**. If you require an older version, you will need to build it yourself using the same configuration.
+Mermaid does not provide versioning information for the live-editor, and only really maintain a `latest` tag.  For that reason, we also cannot include version information in the tags.  Assume all variants/tags are "latest".
 
 ---
 
